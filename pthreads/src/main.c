@@ -5,11 +5,6 @@
 #include "../../common/image_io.h"
 #include "../../common/timer.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "../../common/stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../../common/stb_image_write.h"
-
 typedef struct {
     Image in;
     Image out;
@@ -17,31 +12,57 @@ typedef struct {
     int end_y;
 } ThreadData;
 
-// Gaussian Kernel 3x3
-float kernel[3][3] = {
-    {1/16.0, 2/16.0, 1/16.0},
-    {2/16.0, 4/16.0, 2/16.0},
-    {1/16.0, 2/16.0, 1/16.0}
-};
-
-void* gaussian_thread(void* arg) {
+/* 1. GAUSSIAN BLUR WORKER */
+void* gaussian_worker(void* arg) {
     ThreadData* data = (ThreadData*)arg;
-    int w = data->in.width;
-    int ch = data->in.channels;
+    const float kernel[3][3] = {
+        {1/16.0f, 2/16.0f, 1/16.0f},
+        {2/16.0f, 4/16.0f, 2/16.0f},
+        {1/16.0f, 2/16.0f, 1/16.0f}
+    };
 
     for (int y = data->start_y; y < data->end_y; y++) {
-        // Stay within bounds for 3x3 kernel
-        if (y == 0 || y >= data->in.height - 1) continue; 
-
-        for (int x = 1; x < w - 1; x++) {
-            for (int c = 0; c < ch; c++) {
-                float sum = 0.0;
+        if (y <= 0 || y >= data->in.height - 1) continue;
+        for (int x = 1; x < data->in.width - 1; x++) {
+            for (int c = 0; c < data->in.channels; c++) {
+                float sum = 0.0f;
                 for (int ky = -1; ky <= 1; ky++) {
                     for (int kx = -1; kx <= 1; kx++) {
-                        sum += data->in.data[((y + ky) * w + (x + kx)) * ch + c] * kernel[ky + 1][kx + 1];
+                        int idx = ((y + ky) * data->in.width + (x + kx)) * data->in.channels + c;
+                        sum += data->in.data[idx] * kernel[ky + 1][kx + 1];
                     }
                 }
-                data->out.data[(y * w + x) * ch + c] = (unsigned char)sum;
+                data->out.data[(y * data->in.width + x) * data->in.channels + c] = (unsigned char)sum;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* 2. SOBEL EDGE DETECTION WORKER */
+void* sobel_worker(void* arg) {
+    ThreadData* data = (ThreadData*)arg;
+    const int Gx[3][3] = {{-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1}};
+    const int Gy[3][3] = {{-1, -2, -1}, {0, 0, 0}, {1, 2, 1}};
+
+    for (int y = data->start_y; y < data->end_y; y++) {
+        if (y <= 0 || y >= data->in.height - 1) continue;
+        for (int x = 1; x < data->in.width - 1; x++) {
+            float sumX = 0.0f, sumY = 0.0f;
+            for (int ky = -1; ky <= 1; ky++) {
+                for (int kx = -1; kx <= 1; kx++) {
+                    int base = ((y + ky) * data->in.width + (x + kx)) * data->in.channels;
+                    float gray = (data->in.channels >= 3) ? 
+                                 (0.299f * data->in.data[base] + 0.587f * data->in.data[base+1] + 0.114f * data->in.data[base+2]) : 
+                                 (float)data->in.data[base];
+                    sumX += gray * Gx[ky + 1][kx + 1];
+                    sumY += gray * Gy[ky + 1][kx + 1];
+                }
+            }
+            unsigned char magnitude = (unsigned char)fminf(sqrtf(sumX*sumX + sumY*sumY), 255.0f);
+            int out_base = (y * data->in.width + x) * data->out.channels;
+            for (int c = 0; c < data->out.channels; c++) {
+                data->out.data[out_base + c] = magnitude;
             }
         }
     }
@@ -49,42 +70,49 @@ void* gaussian_thread(void* arg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        printf("Usage: %s <input> <output> <num_threads>\n", argv[0]);
+    if (argc < 5) {
+        printf("Usage: %s <input> <out_gaussian> <out_sobel> <num_threads>\n", argv[0]);
         return 1;
     }
 
-    int num_threads = atoi(argv[3]);
-    int w, h, ch;
-    unsigned char *pixels = stbi_load(argv[1], &w, &h, &ch, 0);
-    Image imgIn = {w, h, ch, pixels};
-    Image imgOut = {w, h, ch, malloc(w * h * ch)};
+    int num_threads = atoi(argv[4]);
+    Image imgIn = load_image(argv[1]);
+    Image imgGaussian = create_image(imgIn.width, imgIn.height, imgIn.channels);
+    Image imgSobel = create_image(imgIn.width, imgIn.height, imgIn.channels);
 
     pthread_t threads[num_threads];
-    ThreadData thread_data[num_threads];
+    ThreadData args[num_threads];
+    int rows_per_thread = imgIn.height / num_threads;
 
-    double start = get_time();
+    
 
-    int rows_per_thread = h / num_threads;
+    /* Execute Gaussian Blur */
+    double t0 = get_time();
     for (int i = 0; i < num_threads; i++) {
-        thread_data[i].in = imgIn;
-        thread_data[i].out = imgOut;
-        thread_data[i].start_y = i * rows_per_thread;
-        thread_data[i].end_y = (i == num_threads - 1) ? h : (i + 1) * rows_per_thread;
-        
-        pthread_create(&threads[i], NULL, gaussian_thread, &thread_data[i]);
+        args[i].in = imgIn; args[i].out = imgGaussian;
+        args[i].start_y = i * rows_per_thread;
+        args[i].end_y = (i == num_threads - 1) ? imgIn.height : (i + 1) * rows_per_thread;
+        pthread_create(&threads[i], NULL, gaussian_worker, &args[i]);
     }
+    for (int i = 0; i < num_threads; i++) pthread_join(threads[i], NULL);
+    double t1 = get_time();
+    printf("Gaussian Blur  - Pthreads (%d threads): %.6f seconds\n", num_threads, t1 - t0);
 
+    /* Execute Sobel Edge Detection */
+    double t2 = get_time();
     for (int i = 0; i < num_threads; i++) {
-        pthread_join(threads[i], NULL);
+        args[i].in = imgIn; args[i].out = imgSobel;
+        pthread_create(&threads[i], NULL, sobel_worker, &args[i]);
     }
+    for (int i = 0; i < num_threads; i++) pthread_join(threads[i], NULL);
+    double t3 = get_time();
+    printf("Sobel Edge Det - Pthreads (%d threads): %.6f seconds\n", num_threads, t3 - t2);
 
-    double end = get_time();
-    printf("Pthreads (%d threads) Time: %f seconds\n", num_threads, end - start);
+    save_image(argv[2], imgGaussian);
+    save_image(argv[3], imgSobel);
 
-    stbi_write_jpg(argv[2], w, h, ch, imgOut.data, 100);
-
-    free(imgOut.data);
-    stbi_image_free(pixels);
+    free_image(imgIn);
+    free(imgGaussian.data);
+    free(imgSobel.data);
     return 0;
 }

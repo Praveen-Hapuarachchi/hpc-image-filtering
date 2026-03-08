@@ -1,11 +1,15 @@
 CC = gcc
-CFLAGS = -O3 -Wall
+CFLAGS = -O3 -Wall -I../common
 LIBS = -lpthread -lm
 
-all: image_filter_pthreads
+# Include both the main file and the image utility file
+SRCS = src/main.c ../common/image_io.c
+TARGET = image_filter_pthreads
 
-image_filter_pthreads: src/main.c
-	$(CC) $(CFLAGS) src/main.c -o image_filter_pthreads $(LIBS)
+all: $(TARGET)
+
+$(TARGET): $(SRCS)
+	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET) $(LIBS)
 
 clean:
-	rm -f image_filter_pthreads
+	rm -f $(TARGET)

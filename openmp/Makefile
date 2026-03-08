@@ -1,6 +1,8 @@
 
 CC      = gcc
-CFLAGS  = -O2 -Wall -fopenmp -lm
+CFLAGS  = -O2 -Wall -fopenmp
+LDFLAGS = -lm
+
 TARGET  = openmp_filter
 
 # Relative paths from openmp/
@@ -18,7 +20,7 @@ OUT_S   ?= ../../data/output/openmp_sobel.jpg
 all: $(TARGET)
 
 $(TARGET): $(SRC) $(COMMON)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(COMMON) -I../../common -lm
+	$(CC) $(CFLAGS) -I../../common -o $(TARGET) $(SRC) $(COMMON) $(LDFLAGS)
 
 run: $(TARGET)
 	./$(TARGET) $(INPUT) $(OUT_G) $(OUT_S) $(THREADS)

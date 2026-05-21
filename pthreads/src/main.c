@@ -76,6 +76,10 @@ int main(int argc, char **argv) {
     }
 
     int num_threads = atoi(argv[4]);
+    if (num_threads <= 0) {
+        printf("Error: num_threads must be >= 1\n");
+        return 1;
+    }
     Image imgIn = load_image(argv[1]);
     Image imgGaussian = create_image(imgIn.width, imgIn.height, imgIn.channels);
     Image imgSobel = create_image(imgIn.width, imgIn.height, imgIn.channels);
@@ -112,7 +116,7 @@ int main(int argc, char **argv) {
     save_image(argv[3], imgSobel);
 
     free_image(imgIn);
-    free(imgGaussian.data);
-    free(imgSobel.data);
+    free_image(imgGaussian);
+    free_image(imgSobel);
     return 0;
 }

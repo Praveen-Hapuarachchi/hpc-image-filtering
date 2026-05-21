@@ -33,6 +33,6 @@ Image create_image(int width, int height, int channels) {
     img.width = width;
     img.height = height;
     img.channels = channels;
-    img.data = malloc(width * height * channels);
+    img.data = calloc(width * height * channels, 1);
     return img;
 }
